@@ -1,6 +1,7 @@
 # source: https://defn.io/2018/02/25/web-app-from-scratch-01/
 
 import socket
+from sys import path
 import typing
 
 HOST = "127.0.0.1"
@@ -47,6 +48,36 @@ class Request(typing.NamedTuple):
     path: str
     headers: typing.Mapping[str, str]
 
+    @classmethod
+    def from_socket(cls, sock: socket.socket) -> "Request":
+        """Read and parse the request from a socket object.
+
+        Raises:
+          ValueError: When the request cannot be parsed.
+        """
+
+        lines = iter_lines(sock)
+
+        try:
+            request_line = next(lines).decode("ascii")
+        except StopIteration:
+            raise ValueError("Request line missing")
+
+        try:
+            method, path, _ = request_line.split(" ")
+        except ValueError:
+            raise ValueError("Malformed request line {!r}".format(request_line))
+
+        headers = {}
+        for line in lines:
+            try:
+                name, _, value = line.decode("ascii").partition(":")
+                headers[name.lower()] = value.lstrip()
+            except ValueError:
+                raise ValueError("Malformed request line {!r}".format(request_line))
+
+        return cls(method=method.upper(), path=path, headers=headers)
+
 
 with socket.socket() as server_sock:
     server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -58,7 +89,6 @@ with socket.socket() as server_sock:
         client_sock, client_addr = server_sock.accept()
         print("New connection from {}".format({client_addr}))
         with client_sock:
-            for request_line in iter_lines(client_sock):
-                print(request_line)
-
+            request = Request.from_socket(client_sock)
+            print(request)
             client_sock.sendall(RESPONSE)
