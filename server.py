@@ -6,6 +6,7 @@ import socket
 from sys import path
 import typing
 from request import Request
+from response import Response
 
 SERVER_ROOT = os.path.abspath("www")
 
@@ -77,41 +78,6 @@ def iter_lines(sock: socket.socket, bufsize: int = 16_384) -> typing.Generator[b
                 break
 
 
-# class Request(typing.NamedTuple):
-#     method: str
-#     path: str
-#     headers: typing.Mapping[str, str]
-
-#     @classmethod
-#     def from_socket(cls, sock: socket.socket) -> "Request":
-#         """Read and parse the request from a socket object.
-
-#         Raises:
-#           ValueError: When the request cannot be parsed.
-#         """
-
-#         lines = iter_lines(sock)
-
-#         try:
-#             request_line = next(lines).decode("ascii")
-#         except StopIteration:
-#             raise ValueError("Request line missing")
-
-#         try:
-#             method, path, _ = request_line.split(" ")
-#         except ValueError:
-#             raise ValueError("Malformed request line {!r}".format(request_line))
-
-#         headers = {}
-#         for line in lines:
-#             try:
-#                 name, _, value = line.decode("ascii").partition(":")
-#                 headers[name.lower()] = value.lstrip()
-#             except ValueError:
-#                 raise ValueError("Malformed request line {!r}".format(request_line))
-
-#         return cls(method=method.upper(), path=path, headers=headers)
-
 
 def serve_file(sock: socket.socket, path: str) -> None:
     """Given a socket and the relative path to a file (relative to
@@ -125,14 +91,13 @@ def serve_file(sock: socket.socket, path: str) -> None:
     abspath = os.path.normpath(os.path.join(SERVER_ROOT, path.lstrip("/")))
 
     if not abspath.startswith(SERVER_ROOT):
-        sock.sendall(NOT_FOUND_RESPONSE)
+        response = Response(status="404 NOT FOUND", content="Not Found")
+        response.send(sock)
         return
 
     try:
         with open(abspath, "rb") as f:
-            stat = os.fstat(f.fileno())
             content_type, encoding = mimetypes.guess_type(abspath)
-
             """
                 - MIME type:
                     more: https://developer.mozilla.org/en-US/docs/Web/HTTP/Basics_of_HTTP/MIME_types
@@ -143,22 +108,19 @@ def serve_file(sock: socket.socket, path: str) -> None:
                     application/octet-stream is the default MIME type, representing arbitrary data, but it is recommeneded
                     to use more specific MIME type.
             """
-
             if content_type is None:
                 content_type = "application/octet-stream"
 
             if encoding is not None:
                 content_type += "; charset={}".format(encoding)
 
-            response_headers = FILE_RESPONSE_TEMPLATE.format(
-                content_type = content_type,
-                content_length = stat.st_size,
-            ).encode("ascii")
-
-            sock.sendall(response_headers)
-            sock.sendfile(f)
+            response = Response(status="200 OK", body=f)
+            response.headers.add("content-type", content_type)
+            response.send(sock)
+            return
     except FileNotFoundError:
-        sock.sendall(NOT_FOUND_RESPONSE)
+        response = Response(status="404 NOT FOUND", content="Not Found")
+        response.send(sock)
         return
 
 
@@ -168,29 +130,32 @@ with socket.socket() as server_sock:
     server_sock.listen(0)
     print(f"Listening on {HOST}:{PORT}...")
 
-    while(True):
+    while True:
         client_sock, client_addr = server_sock.accept()
-        print("New connection from {}".format({client_addr}))
+        print(f"Received connection from {client_addr}...")
         with client_sock:
             try:
                 request = Request.from_socket(client_sock)
                 if "100-continue" in request.headers.get("expect", ""):
-                    client_sock.sendall(b"HTTP/1.1 100 Continue\r\n\r\n")
+                    response = Response(status="100 Continue")
+                    response.send(client_sock)
 
                 try:
-                    content_length = int(request.headers.get("content-length","0"))
+                    content_length = int(request.headers.get("content-length", "0"))
                 except ValueError:
                     content_length = 0
 
                 if content_length:
                     body = request.body.read(content_length)
-                    print("Request Body", body)
+                    print("Request body", body)
 
                 if request.method != "GET":
-                    client_sock.sendall(METHOD_NOT_ALLOWED_RESPONSE)
+                    response = Response(status="405 Method Not Allowed", content="Method Not Allowed")
+                    response.send(client_sock)
                     continue
 
                 serve_file(client_sock, request.path)
             except Exception as e:
-                print("Failed to parse request: {}".format(e))
-                client_sock.sendall(BAD_REQUEST_RESPONSE)
+                print(f"Failed to parse request: {e}")
+                response = Response(status="400 Bad Request", content="Bad Request")
+                response.send(client_sock)

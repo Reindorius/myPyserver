@@ -81,6 +81,10 @@ def iter_lines(sock: socket.socket, bufsize: int = 16_384) -> typing.Generator[b
     and yield each one until an empty one is found.  Returns the
     remainder after the empty line.
     """
+
+    # The return type of generator functions can be annotated by the generic type 
+    # Generator[yield_type, send_type, return_type] provided by typing.py module
+
     buff = b""
     while True:
         data = sock.recv(bufsize)
